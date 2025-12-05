@@ -37,7 +37,7 @@ pip install pandas matplotlib
 ### Clone / copy
 
 ```bash
-git clone [https://github.com/<your-username>/<your-repo>.git](https://github.com/hosseinv93/lammps_log_plot.git)
+git clone https://github.com/hosseinv93/lammps_log_plot.git
 cd lammps_log_plot
 ```
 
