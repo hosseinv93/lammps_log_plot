@@ -37,11 +37,11 @@ pip install pandas matplotlib
 ### Clone / copy
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone [https://github.com/<your-username>/<your-repo>.git](https://github.com/hosseinv93/lammps_log_plot.git)
+cd lammps_log_plot
 ```
 
-Make sure the script is named e.g.:
+Make sure the script is named, e.g.:
 
 ```text
 lammps_log_plot.py
@@ -167,7 +167,3 @@ optional arguments:
 ```
 
 ---
-
-
-
-Add the chosen license text in a `LICENSE` file in the repository.
