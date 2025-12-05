@@ -1,4 +1,3 @@
-cat plot2.py 
 #!/usr/bin/env python3
 """
 lammps_log_plot.py
