@@ -2,29 +2,35 @@
 """
 lammps_log_plot.py
 
-Parse a LAMMPS log file containing multiple runs and plot selected columns.
-Optionally, average selected columns over a chosen x-range (typically Step).
+Parse one or more LAMMPS log files containing multiple runs and plot selected columns.
+Optionally average selected columns over a chosen x-range and save the plotted data.
 
-Usage examples
---------------
-1) List all detected runs and their columns:
-    python plot.py log.lammps --list
+Examples
+--------
+1) List all detected runs and columns in several logs:
+    python plot.py log1.lammps log2.lammps --list
 
-2) Plot Temperature vs Step from the 2nd run:
-    python plot.py log.lammps --run 2 --x Step --y Temp
+2) Plot Temperature vs Step from run 2 for several logs:
+    python plot.py log1.lammps log2.lammps --run 2 --x Step --y Temp
 
-3) Plot multiple y-columns vs Step from the 1st run:
-    python plot.py log.lammps --run 1 --x Step --y Temp Press PotEng
+3) Plot multiple y-columns vs Step:
+    python plot.py log1.lammps log2.lammps --run 1 --x Step --y Temp Press PotEng
 
-4) Average Temp and Press between Step = 10000 and 20000 for run 2:
-    python plot.py log.lammps --run 2 --x Step --avg-cols Temp Press --x-min 10000 --x-max 20000
+4) Average Temp and Press between Step 10000 and 20000:
+    python plot.py log1.lammps log2.lammps --run 2 --x Step --avg-cols Temp Press --x-min 10000 --x-max 20000
 
-5) Do both averaging and plotting over a restricted range:
-    python plot.py log.lammps --run 2 --x Step --y Temp Press --avg-cols Temp Press --x-min 10000 --x-max 20000
+5) Plot and save plotted data:
+    python plot.py run1/log.lammps run2/log.lammps --run 1 --x Step --y Temp PotEng --save-data compare.dat
+
+6) Save as CSV:
+    python plot.py run1/log.lammps run2/log.lammps --run 1 --x Step --y Temp --save-data compare.csv --sep ,
 """
 
 import argparse
-from typing import List
+import re
+from pathlib import Path
+from typing import List, Dict, Tuple
+
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -32,13 +38,12 @@ import matplotlib.pyplot as plt
 def parse_lammps_log(path: str) -> List[pd.DataFrame]:
     """
     Parse a LAMMPS log file and return a list of thermo DataFrames.
-    Each DataFrame corresponds to a 'run' (or minimize) block.
 
     A thermo block is detected as:
-      - a line starting with 'Step' (the header)
-      - followed by lines that start with a numeric value (the data)
-      - ends when a non-numeric first token is found, when the
-        number of columns changes, or on a blank line.
+      - a line starting with 'Step'
+      - followed by numeric data lines
+      - ends when a non-numeric first token is found, when the number
+        of columns changes, or on a blank line.
     """
     runs: List[pd.DataFrame] = []
 
@@ -51,7 +56,6 @@ def parse_lammps_log(path: str) -> List[pd.DataFrame]:
     while i < n:
         line = lines[i].strip()
 
-        # Detect the header line of a thermo block
         if line.startswith("Step"):
             headers = line.split()
             i += 1
@@ -60,27 +64,25 @@ def parse_lammps_log(path: str) -> List[pd.DataFrame]:
             while i < n:
                 line = lines[i].strip()
 
-                # End of block on empty line
                 if not line:
                     break
 
                 parts = line.split()
 
-                # Attempt to see if first token is numeric (= data line)
                 try:
                     float(parts[0])
                 except ValueError:
-                    # Non-numeric first token -> end of this thermo block
                     break
 
-                # If the number of columns doesn't match the header, also stop
                 if len(parts) != len(headers):
                     break
 
-                # Convert all values to float
-                row = [float(p) for p in parts]
-                data.append(row)
+                try:
+                    row = [float(p) for p in parts]
+                except ValueError:
+                    break
 
+                data.append(row)
                 i += 1
 
             if data:
@@ -92,97 +94,209 @@ def parse_lammps_log(path: str) -> List[pd.DataFrame]:
     return runs
 
 
+def safe_label_from_path(path: str) -> str:
+    """
+    Create a readable label from the log path.
+
+    Example:
+        run1/log.lammps -> run1_log
+        eps2/run3/log.lammps -> run3_log
+    """
+    p = Path(path)
+
+    if p.parent.name:
+        label = f"{p.parent.name}_{p.stem}"
+    else:
+        label = p.stem
+
+    label = re.sub(r"[^A-Za-z0-9_]+", "_", label)
+    label = re.sub(r"_+", "_", label)
+    return label.strip("_")
+
+
+def make_unique_labels(paths: List[str]) -> Dict[str, str]:
+    """
+    Make unique labels for each log file.
+    """
+    labels = {}
+    used = {}
+
+    for path in paths:
+        base = safe_label_from_path(path)
+
+        if base not in used:
+            used[base] = 1
+            labels[path] = base
+        else:
+            used[base] += 1
+            labels[path] = f"{base}_{used[base]}"
+
+    return labels
+
+
+def select_x_range(
+    df: pd.DataFrame,
+    xcol: str,
+    x_min: float | None,
+    x_max: float | None,
+) -> pd.DataFrame:
+    """
+    Filter DataFrame by x range.
+    """
+    df_sel = df.copy()
+
+    if x_min is not None:
+        df_sel = df_sel[df_sel[xcol] >= x_min]
+
+    if x_max is not None:
+        df_sel = df_sel[df_sel[xcol] <= x_max]
+
+    return df_sel
+
+
+def save_plotted_data(
+    selected_data: List[Tuple[str, pd.DataFrame]],
+    xcol: str,
+    ycols: List[str],
+    output_path: str,
+    sep: str,
+):
+    """
+    Save plotted data in wide format.
+
+    The first column is xcol.
+    Each following column is one selected y-column from one log file.
+
+    Example columns:
+        Step  run1_log_Temp  run2_log_Temp
+    """
+    merged = None
+
+    for label, df in selected_data:
+        cols = [xcol] + ycols
+        out = df[cols].copy()
+
+        rename_map = {col: f"{label}_{col}" for col in ycols}
+        out = out.rename(columns=rename_map)
+
+        if merged is None:
+            merged = out
+        else:
+            merged = pd.merge(merged, out, on=xcol, how="outer")
+
+    if merged is None:
+        print("No data to save.")
+        return
+
+    merged = merged.sort_values(by=xcol)
+
+    merged.to_csv(output_path, sep=sep, index=False)
+    print(f"Saved plotted data to: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Read a LAMMPS log file and plot/average selected columns from a chosen run."
+        description="Read one or more LAMMPS log files and plot/average selected columns."
     )
-    parser.add_argument("logfile", help="Path to LAMMPS log file (e.g., log.lammps)")
+
+    parser.add_argument(
+        "logfiles",
+        nargs="+",
+        help="Path(s) to LAMMPS log file(s), e.g. log.lammps run2/log.lammps",
+    )
+
     parser.add_argument(
         "--run",
         type=int,
         default=1,
-        help="Index of the run to use (1-based, default: 1)",
+        help="Index of the run to use from each log file, 1-based. Default: 1",
     )
+
     parser.add_argument(
         "--x",
         default="Step",
-        help="Name of the column for the x-axis / filtering (default: Step)",
+        help="Column for x-axis and filtering. Default: Step",
     )
+
     parser.add_argument(
         "--y",
         nargs="+",
-        help="One or more column names for the y-axis (e.g., Temp Press PotEng)",
+        help="One or more columns for plotting, e.g. Temp Press PotEng",
     )
+
     parser.add_argument(
         "--list",
         action="store_true",
-        help="List detected runs and their columns. If used without --y or --avg-cols, exit after listing.",
+        help="List detected runs and columns for each log file.",
     )
+
     parser.add_argument(
         "--x-min",
         type=float,
-        help="Minimum x-axis value (e.g., Step) to include for plotting/averaging.",
+        help="Minimum x value to include for plotting/averaging.",
     )
+
     parser.add_argument(
         "--x-max",
         type=float,
-        help="Maximum x-axis value (e.g., Step) to include for plotting/averaging.",
+        help="Maximum x value to include for plotting/averaging.",
     )
+
     parser.add_argument(
         "--avg-cols",
         nargs="+",
-        help="One or more column names to average over the selected x-range.",
+        help="One or more columns to average over the selected x-range.",
+    )
+
+    parser.add_argument(
+        "--save-data",
+        help="Save the plotted data to this file, e.g. compare.dat or compare.csv.",
+    )
+
+    parser.add_argument(
+        "--sep",
+        default=" ",
+        help="Separator for saved data. Use ',' for CSV. Default: space.",
+    )
+
+    parser.add_argument(
+        "--save-fig",
+        help="Save the figure to this file, e.g. plot.png or plot.pdf.",
+    )
+
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Do not display the plot window. Useful when only saving the figure/data.",
     )
 
     args = parser.parse_args()
 
-    runs = parse_lammps_log(args.logfile)
+    all_runs: Dict[str, List[pd.DataFrame]] = {}
 
-    if not runs:
-        print("No thermo runs (Step headers) found in the log file.")
-        return
+    for logfile in args.logfiles:
+        runs = parse_lammps_log(logfile)
+        all_runs[logfile] = runs
 
-    # List runs (but optionally continue to plotting/averaging)
+        if not runs:
+            print(f"No thermo runs found in: {logfile}")
+
+    labels = make_unique_labels(args.logfiles)
+
     if args.list:
-        print(f"Found {len(runs)} thermo run(s) in {args.logfile}:")
-        for idx, df in enumerate(runs, start=1):
-            print(
-                f"\nRun {idx}: {len(df)} rows, columns:\n  "
-                + "  ".join(df.columns.tolist())
-            )
-        # If user only wanted listing (no plotting or averaging), exit here
+        for logfile, runs in all_runs.items():
+            print(f"\nFile: {logfile}")
+            print(f"Found {len(runs)} thermo run(s).")
+
+            for idx, df in enumerate(runs, start=1):
+                print(
+                    f"  Run {idx}: {len(df)} rows, columns:\n    "
+                    + "  ".join(df.columns.tolist())
+                )
+
         if args.y is None and args.avg_cols is None:
             return
 
-    # Check selected run index
-    run_idx = args.run
-    if run_idx < 1 or run_idx > len(runs):
-        print(
-            f"Requested run index {run_idx} is out of range. "
-            f"File has {len(runs)} run(s)."
-        )
-        return
-
-    df = runs[run_idx - 1]
-
-    # Sanity: x-column must exist
-    if args.x not in df.columns:
-        print(f"x-axis column '{args.x}' not found in run {run_idx}.")
-        print("Available columns:", ", ".join(df.columns))
-        return
-
-    # Filter by x-range (if requested)
-    df_sel = df.copy()
-    if args.x_min is not None:
-        df_sel = df_sel[df_sel[args.x] >= args.x_min]
-    if args.x_max is not None:
-        df_sel = df_sel[df_sel[args.x] <= args.x_max]
-
-    if df_sel.empty:
-        print("No data left after applying x-range filters.")
-        return
-
-    # Make sure there is something to do
     if (args.y is None or len(args.y) == 0) and not args.avg_cols:
         print(
             "Nothing to do: provide at least one --y column for plotting "
@@ -190,52 +304,108 @@ def main():
         )
         return
 
-    # Check that requested y-columns exist
-    if args.y:
-        missing_y = [col for col in args.y if col not in df.columns]
-        if missing_y:
-            print(f"The following y-axis columns were not found in run {run_idx}:")
-            print("  " + ", ".join(missing_y))
-            print("Available columns:", ", ".join(df.columns))
-            return
+    selected_data: List[Tuple[str, pd.DataFrame]] = []
 
-    # Averages over selected x-range
-    if args.avg_cols:
-        missing_avg = [col for col in args.avg_cols if col not in df.columns]
-        if missing_avg:
-            print("The following --avg-cols were not found in run {run_idx}:")
-            print("  " + ", ".join(missing_avg))
-            print("Available columns:", ", ".join(df.columns))
-        else:
-            print(
-                f"Averages for run {run_idx} "
-                f"over {args.x} in "
-                f"[{args.x_min if args.x_min is not None else df_sel[args.x].min()}, "
-                f"{args.x_max if args.x_max is not None else df_sel[args.x].max()}]:"
-            )
-            for col in args.avg_cols:
-                mean_val = df_sel[col].mean()
-                print(f"  {col}: {mean_val:.6g}")
+    fig = None
+    ax = None
 
-    # Plot (if y-columns are given)
     if args.y:
         fig, ax = plt.subplots()
-        x = df_sel[args.x]
 
-        for col in args.y:
-            ax.plot(x, df_sel[col], label=col)
+    for logfile, runs in all_runs.items():
+        if not runs:
+            continue
 
+        if args.run < 1 or args.run > len(runs):
+            print(
+                f"Skipping {logfile}: requested run {args.run}, "
+                f"but file has only {len(runs)} run(s)."
+            )
+            continue
+
+        df = runs[args.run - 1]
+        label = labels[logfile]
+
+        if args.x not in df.columns:
+            print(f"Skipping {logfile}: x-column '{args.x}' not found.")
+            print("Available columns:", ", ".join(df.columns))
+            continue
+
+        df_sel = select_x_range(df, args.x, args.x_min, args.x_max)
+
+        if df_sel.empty:
+            print(f"Skipping {logfile}: no data left after x-range filtering.")
+            continue
+
+        if args.y:
+            missing_y = [col for col in args.y if col not in df.columns]
+            if missing_y:
+                print(f"Skipping plot for {logfile}: missing y-column(s):")
+                print("  " + ", ".join(missing_y))
+                print("Available columns:", ", ".join(df.columns))
+            else:
+                x = df_sel[args.x]
+
+                for col in args.y:
+                    ax.plot(x, df_sel[col], label=f"{label}: {col}")
+
+                selected_data.append((label, df_sel))
+
+        if args.avg_cols:
+            missing_avg = [col for col in args.avg_cols if col not in df.columns]
+
+            if missing_avg:
+                print(f"Skipping averages for {logfile}: missing column(s):")
+                print("  " + ", ".join(missing_avg))
+                print("Available columns:", ", ".join(df.columns))
+            else:
+                xmin_used = args.x_min if args.x_min is not None else df_sel[args.x].min()
+                xmax_used = args.x_max if args.x_max is not None else df_sel[args.x].max()
+
+                print(
+                    f"\nAverages for {logfile}, run {args.run}, "
+                    f"over {args.x} in [{xmin_used}, {xmax_used}]:"
+                )
+
+                for col in args.avg_cols:
+                    mean_val = df_sel[col].mean()
+                    std_val = df_sel[col].std()
+                    print(f"  {col}: mean = {mean_val:.6g}, std = {std_val:.6g}")
+
+    if args.save_data:
+        if not args.y:
+            print("Cannot save plotted data because no --y columns were given.")
+        elif not selected_data:
+            print("No valid plotted data available to save.")
+        else:
+            save_plotted_data(
+                selected_data=selected_data,
+                xcol=args.x,
+                ycols=args.y,
+                output_path=args.save_data,
+                sep=args.sep,
+            )
+
+    if args.y and ax is not None:
         ax.set_xlabel(args.x)
         ax.set_ylabel(" / ".join(args.y))
-        title = f"{args.logfile} – run {run_idx}"
+
+        title = f"Run {args.run}"
         if args.x_min is not None or args.x_max is not None:
-            title += f" (filtered {args.x})"
+            title += f" filtered by {args.x}"
+
         ax.set_title(title)
         ax.legend()
         ax.grid(True)
 
         plt.tight_layout()
-        plt.show()
+
+        if args.save_fig:
+            plt.savefig(args.save_fig, dpi=300)
+            print(f"Saved figure to: {args.save_fig}")
+
+        if not args.no_show:
+            plt.show()
 
 
 if __name__ == "__main__":
