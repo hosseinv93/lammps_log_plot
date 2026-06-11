@@ -394,12 +394,3 @@ lammps-log-plot log.lammps \
 
 ---
 
-## License
-
-Choose a license that fits your needs. For example, you can add an MIT License file if you want the code to be openly reusable.
-
----
-
-## Author
-
-Hossein Vahid Dastjerdi
