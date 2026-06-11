@@ -2,18 +2,6 @@
 
 A small command-line tool to parse LAMMPS `log.lammps` files, handle multiple thermo runs, and plot, average, or export selected thermo columns.
 
-Script file name, for example:
-
-```text
-lammps_log_plot.py
-```
-
-Suggested command name if added to your `$PATH`:
-
-```text
-lammps-log-plot
-```
-
 ---
 
 ## Features
